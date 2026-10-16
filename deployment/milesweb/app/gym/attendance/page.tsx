@@ -99,9 +99,15 @@ function ScanTab() {
   const [scanError, setScanError] = useState('');
   const [processing, setProcessing] = useState(false);
   const scannerRef = useRef<Html5Qrcode | null>(null);
+  const processingRef = useRef(false);
+  const startTimerRef = useRef<number | null>(null);
   const elementId = 'qr-reader';
 
   const stopScanner = useCallback(async () => {
+    if (startTimerRef.current !== null) {
+      window.clearTimeout(startTimerRef.current);
+      startTimerRef.current = null;
+    }
     if (scannerRef.current) {
       try {
         await scannerRef.current.stop();
@@ -116,17 +122,20 @@ function ScanTab() {
 
   const handleScan = useCallback(
     async (decodedText: string) => {
-      if (processing) return;
+      if (processingRef.current) return;
+      processingRef.current = true;
       setProcessing(true);
       await stopScanner();
 
       try {
+        const qrToken = decodedText.trim();
+        if (!qrToken) throw new Error('The QR code did not contain a member token.');
         const res = await fetch('/api/attendance', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ qr_token: decodedText }),
+          body: JSON.stringify({ qr_token: qrToken }),
         });
-        const json = await res.json();
+        const json = await res.json().catch(() => ({}));
         if (res.status === 409 && json.data?.alreadyCheckedIn) {
           setScanResult(json.data);
           setScanError(json.message || 'Member is already checked in');
@@ -141,19 +150,22 @@ function ScanTab() {
         setScanError('Network error — please try again');
         setScanResult(null);
       } finally {
+        processingRef.current = false;
         setProcessing(false);
       }
     },
-    [processing, stopScanner]
+    [stopScanner]
   );
 
   const startScanner = useCallback(async () => {
+    if (processingRef.current || scannerRef.current || startTimerRef.current !== null) return;
     setScanResult(null);
     setScanError('');
     setScanning(true);
 
     // Wait for DOM element to render
-    setTimeout(async () => {
+    startTimerRef.current = window.setTimeout(async () => {
+      startTimerRef.current = null;
       try {
         const html5Qrcode = new Html5Qrcode(elementId);
         scannerRef.current = html5Qrcode;
@@ -169,7 +181,24 @@ function ScanTab() {
           }
         );
       } catch (err) {
-        setScanError('Could not access camera. Please grant camera permissions.');
+        const message = err instanceof Error ? err.message : String(err);
+        const cameraUnavailable =
+          message.includes('NotAllowedError') ||
+          message.includes('NotFoundError') ||
+          message.toLowerCase().includes('secure context');
+        setScanError(
+          cameraUnavailable
+            ? 'Camera access is unavailable. Allow camera permission and open this page over HTTPS, then try again.'
+            : `Could not start the camera: ${message}`
+        );
+        if (scannerRef.current) {
+          try {
+            await scannerRef.current.clear();
+          } catch {
+            // The scanner may not have initialized its camera.
+          }
+          scannerRef.current = null;
+        }
         setScanning(false);
       }
     }, 100);
@@ -177,6 +206,7 @@ function ScanTab() {
 
   useEffect(() => {
     return () => {
+      if (startTimerRef.current !== null) window.clearTimeout(startTimerRef.current);
       stopScanner();
     };
   }, [stopScanner]);

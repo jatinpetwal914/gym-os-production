@@ -61,29 +61,67 @@ export default function GymDashboard() {
   const [tempPassword, setTempPassword] = useState<string | null>(null);
   const [resetError, setResetError] = useState('');
 
-  const fetchDashboard = useCallback(async () => {
+  const fetchDashboard = useCallback(async (signal?: AbortSignal) => {
     try {
-      const res = await fetch('/api/dashboard');
-      if (!res.ok) {
-        setError('Failed to load dashboard');
-        return;
-      }
-      setError('');
+      const res = await fetch('/api/dashboard', { signal });
       const data = await res.json();
+      if (signal?.aborted) return;
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to load dashboard');
+      }
+      if (!data.stats) throw new Error('Dashboard response was incomplete.');
       setStats(data.stats);
       setAttendanceData(data.attendanceChart || []);
       setRevenueData(data.revenueChart || []);
       setInside(data.floor?.inside || []);
       setLeft(data.floor?.left || []);
+      setError('');
+    } catch (err) {
+      if (signal?.aborted) return;
+      setError(err instanceof Error ? err.message : 'Failed to load dashboard');
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchDashboard();
-    const timer = window.setInterval(fetchDashboard, 20000);
-    return () => window.clearInterval(timer);
+    let timer: number | undefined;
+    let activeRequest: AbortController | null = null;
+    let disposed = false;
+
+    const poll = () => {
+      if (disposed || document.visibilityState !== 'visible') return;
+
+      const controller = new AbortController();
+      activeRequest = controller;
+      void fetchDashboard(controller.signal).finally(() => {
+        if (activeRequest === controller) activeRequest = null;
+        if (!disposed && !controller.signal.aborted && document.visibilityState === 'visible') {
+          timer = window.setTimeout(poll, 20000);
+        }
+      });
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        if (timer !== undefined) window.clearTimeout(timer);
+        timer = undefined;
+        activeRequest?.abort();
+        activeRequest = null;
+      } else if (!activeRequest && timer === undefined) {
+        poll();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    poll();
+
+    return () => {
+      disposed = true;
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (timer !== undefined) window.clearTimeout(timer);
+      activeRequest?.abort();
+    };
   }, [fetchDashboard]);
 
   const handleResetPassword = async () => {
@@ -107,21 +145,36 @@ export default function GymDashboard() {
   };
 
   const checkoutMember = async (attendanceId: string) => {
-    const res = await fetch(`/api/attendance/${attendanceId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    });
-    if (res.status === 409) {
-      // Already checked out — refresh so the floor list matches the server.
+    try {
+      const res = await fetch(`/api/attendance/${attendanceId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = res.status === 409 ? null : await res.json();
+      if (!res.ok && res.status !== 409) {
+        throw new Error(data?.error || 'Failed to check out member');
+      }
+      await fetchDashboard();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to check out member');
     }
-    fetchDashboard();
   };
 
-  if (loading || error) {
+  if (loading && !stats) {
     return (
       <div className="p-8">
-        <QueryState loading={loading} error={error || null} empty={false}>
+        <QueryState loading error={null} empty={false}>
+          <span />
+        </QueryState>
+      </div>
+    );
+  }
+
+  if (!stats) {
+    return (
+      <div className="p-8">
+        <QueryState loading={false} error={error || 'Dashboard data is unavailable.'} empty={false}>
           <span />
         </QueryState>
       </div>
@@ -132,10 +185,10 @@ export default function GymDashboard() {
     { label: 'On the floor', value: stats?.insideNow ?? 0, icon: UserCheck, tone: 'from-violet-500 to-indigo-500' },
     { label: 'Left today', value: stats?.leftToday ?? 0, icon: LogOut, tone: 'from-orange-400 to-amber-500' },
     { label: 'Total members', value: stats?.totalMembers ?? 0, icon: Users, tone: 'from-sky-400 to-cyan-500' },
-    { label: 'Unpaid / expired', value: stats?.expiredMembers ?? 0, icon: UserX, tone: 'from-rose-400 to-pink-500' },
+    { label: 'Expired members', value: stats.expiredMembers, icon: UserX, tone: 'from-rose-400 to-pink-500' },
     {
       label: 'Revenue',
-      value: `$${(stats?.totalRevenue ?? 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`,
+      value: `₹${stats.totalRevenue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`,
       icon: DollarSign,
       tone: 'from-emerald-400 to-teal-500',
     },
@@ -146,6 +199,11 @@ export default function GymDashboard() {
 
   return (
     <div className="px-4 py-5 lg:p-8">
+      {error && (
+        <div role="alert" className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {error}
+        </div>
+      )}
       <div className="mb-5 flex items-end justify-between gap-3">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">Live desk</p>
@@ -266,7 +324,7 @@ export default function GymDashboard() {
               <YAxis tick={{ fontSize: 11, fill: '#71717a' }} axisLine={false} tickLine={false} />
               <Tooltip
                 contentStyle={{ borderRadius: '12px', border: '1px solid #ede9fe', fontSize: '12px' }}
-                formatter={(value: number) => [`$${value.toLocaleString()}`, 'Revenue']}
+                formatter={(value: number) => [`₹${value.toLocaleString('en-IN')}`, 'Revenue']}
               />
               <Bar dataKey="revenue" fill="#7c5cff" radius={[8, 8, 0, 0]} />
             </BarChart>

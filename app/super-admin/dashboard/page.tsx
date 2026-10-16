@@ -38,14 +38,19 @@ export default function SuperAdminDashboard() {
   const [stats, setStats] = useState<SuperStats | null>(null);
   const [gyms, setGyms] = useState<GymRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   const fetchDashboard = useCallback(async () => {
     try {
       const res = await fetch('/api/dashboard');
-      if (!res.ok) return;
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load dashboard');
+      if (!data.stats) throw new Error('Dashboard response was incomplete.');
       setStats(data.stats);
       setGyms(data.gyms || []);
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load dashboard');
     } finally {
       setLoading(false);
     }
@@ -55,7 +60,7 @@ export default function SuperAdminDashboard() {
     fetchDashboard();
   }, [fetchDashboard]);
 
-  if (loading) {
+  if (loading && !stats) {
     return (
       <div className="p-8">
         <QueryState loading empty={false}>
@@ -65,18 +70,33 @@ export default function SuperAdminDashboard() {
     );
   }
 
+  if (!stats) {
+    return (
+      <div className="p-8">
+        <QueryState loading={false} error={error || 'Dashboard data is unavailable.'} empty={false}>
+          <span />
+        </QueryState>
+      </div>
+    );
+  }
+
   const cards = [
-    { label: 'Total Gyms', value: stats?.totalGyms ?? 0, icon: Building2, color: 'text-slate-800', bg: 'bg-white' },
-    { label: 'Total Members', value: stats?.totalMembers ?? 0, icon: Users, color: 'text-[#2064B6]', bg: 'bg-[#6DCCC3]/20' },
-    { label: 'Active', value: stats?.activeMembers ?? 0, icon: TrendingUp, color: 'text-[#2064B6]', bg: 'bg-[#6DCCC3]/20' },
-    { label: 'Expiring', value: stats?.expiringMembers ?? 0, icon: Clock, color: 'text-slate-600', bg: 'bg-white' },
-    { label: 'Expired', value: stats?.expiredMembers ?? 0, icon: UserX, color: 'text-red-300', bg: 'bg-red-500/10' },
-    { label: 'Total Revenue', value: `${(stats?.totalRevenue ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, icon: DollarSign, color: 'text-slate-800', bg: 'bg-white' },
-    { label: 'Today\'s Attendance', value: stats?.todayAttendance ?? 0, icon: Dumbbell, color: 'text-[#2064B6]', bg: 'bg-[#6DCCC3]/20' },
+    { label: 'Total Gyms', value: stats.totalGyms, icon: Building2, color: 'text-slate-800', bg: 'bg-white' },
+    { label: 'Total Members', value: stats.totalMembers, icon: Users, color: 'text-[#2064B6]', bg: 'bg-[#6DCCC3]/20' },
+    { label: 'Active', value: stats.activeMembers, icon: TrendingUp, color: 'text-[#2064B6]', bg: 'bg-[#6DCCC3]/20' },
+    { label: 'Expiring', value: stats.expiringMembers, icon: Clock, color: 'text-slate-600', bg: 'bg-white' },
+    { label: 'Expired', value: stats.expiredMembers, icon: UserX, color: 'text-red-300', bg: 'bg-red-500/10' },
+    { label: 'Total Revenue', value: `₹${stats.totalRevenue.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, icon: DollarSign, color: 'text-slate-800', bg: 'bg-white' },
+    { label: 'Today\'s Attendance', value: stats.todayAttendance, icon: Dumbbell, color: 'text-[#2064B6]', bg: 'bg-[#6DCCC3]/20' },
   ];
 
   return (
     <div className="p-6 lg:p-8">
+      {error && (
+        <div role="alert" className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {error}
+        </div>
+      )}
       <div className="mb-8">
         <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#2064B6]">Platform</p>
         <h1 className="admin-page-title">Overview</h1>
@@ -135,7 +155,7 @@ export default function SuperAdminDashboard() {
                     <td className="py-3 text-sm font-medium text-slate-800">{g.name}</td>
                     <td className="py-3 text-sm text-slate-500">{g.owner_name || '—'}</td>
                     <td className="py-3 text-sm text-slate-500">{g.member_count}</td>
-                    <td className="py-3 text-sm text-slate-500">${g.revenue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                    <td className="py-3 text-sm text-slate-500">₹{g.revenue.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                     <td className="py-3">
                       <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${
                         g.status === 'active'

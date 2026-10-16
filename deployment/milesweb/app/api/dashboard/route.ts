@@ -22,6 +22,10 @@ type VisitRow = {
   members: FloorMember | FloorMember[];
 };
 
+function throwIfQueryError(error: { message: string } | null) {
+  if (error) throw error;
+}
+
 export async function GET() {
   try {
     const session = await getSession();
@@ -33,9 +37,10 @@ export async function GET() {
     }
 
     const supabase = createUserServerClient();
-    const today = new Date().toISOString().split('T')[0];
-    const sevenDaysFromNow = new Date();
-    sevenDaysFromNow.setDate(sevenDaysFromNow.getDate() + 7);
+    const now = new Date();
+    const today = now.toISOString().slice(0, 10);
+    const tomorrow = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+    const sevenDaysFromNow = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 7));
     const sevenDaysStr = sevenDaysFromNow.toISOString().split('T')[0];
 
     if (canAccessGymPortal(session.role)) {
@@ -45,49 +50,60 @@ export async function GET() {
 
       const gymId = session.gymId;
 
-      const { count: totalMembers } = await supabase
+      const totalMembersResult = await supabase
         .from('members')
         .select('*', { count: 'exact', head: true })
         .eq('gym_id', gymId);
+      throwIfQueryError(totalMembersResult.error);
 
-      const { count: activeMembers } = await supabase
+      const activeMembersResult = await supabase
         .from('members')
         .select('*', { count: 'exact', head: true })
         .eq('gym_id', gymId)
         .eq('status', 'active');
+      throwIfQueryError(activeMembersResult.error);
 
-      const { count: expiringMembers } = await supabase
+      const expiringMembersResult = await supabase
         .from('members')
         .select('*', { count: 'exact', head: true })
         .eq('gym_id', gymId)
         .eq('status', 'expiring')
         .gte('expiry_date', today)
         .lte('expiry_date', sevenDaysStr);
+      throwIfQueryError(expiringMembersResult.error);
 
-      const { count: expiredMembers } = await supabase
+      const expiredMembersResult = await supabase
         .from('members')
         .select('*', { count: 'exact', head: true })
         .eq('gym_id', gymId)
         .eq('status', 'expired');
+      throwIfQueryError(expiredMembersResult.error);
 
-      const { data: revenueRows } = await supabase
+      const revenueResult = await supabase
         .from('payments')
-        .select('amount')
-        .eq('gym_id', gymId);
+        .select('amount, refund_amount')
+        .eq('gym_id', gymId)
+        .in('status', ['completed', 'partially_refunded']);
+      throwIfQueryError(revenueResult.error);
 
-      const totalRevenue = (revenueRows || []).reduce((sum, p) => sum + Number(p.amount), 0);
+      const totalRevenue = (revenueResult.data || []).reduce(
+        (sum, payment) => sum + Number(payment.amount) - Number(payment.refund_amount || 0),
+        0
+      );
 
-      const { data: todayVisitRows } = await supabase
+      const todayVisitsResult = await supabase
         .from('visits')
         .select(`
           id, check_in_at, check_out_at, status,
           members!inner(id, member_id, name, phone, gender, status, plan_id, amount_paid, expiry_date)
         `)
         .eq('gym_id', gymId)
-        .gte('check_in_at', today)
+        .gte('check_in_at', `${today}T00:00:00.000Z`)
+        .lt('check_in_at', tomorrow.toISOString())
         .order('check_in_at', { ascending: false });
+      throwIfQueryError(todayVisitsResult.error);
 
-      const todayVisits = (todayVisitRows || []) as VisitRow[];
+      const todayVisits = (todayVisitsResult.data || []) as VisitRow[];
       const mapVisit = (row: VisitRow) => {
         const member = Array.isArray(row.members) ? row.members[0] : row.members;
         return {
@@ -102,67 +118,72 @@ export async function GET() {
       const todayAttendance = todayVisits.length;
 
       // Attendance chart: last 14 days
-      const fourteenDaysAgo = new Date();
-      fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
-      const fourteenDaysStr = fourteenDaysAgo.toISOString().split('T')[0];
+      const fourteenDaysAgo = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 13));
+      const fourteenDaysStr = fourteenDaysAgo.toISOString().slice(0, 10);
 
-      const { data: visitRows } = await supabase
+      const visitResult = await supabase
         .from('visits')
         .select('check_in_at')
         .eq('gym_id', gymId)
-        .gte('check_in_at', fourteenDaysStr)
+        .gte('check_in_at', `${fourteenDaysStr}T00:00:00.000Z`)
+        .lt('check_in_at', tomorrow.toISOString())
         .order('check_in_at', { ascending: true });
+      throwIfQueryError(visitResult.error);
 
       const attendanceMap: Record<string, number> = {};
-      (visitRows || []).forEach((r: { check_in_at: string }) => {
+      (visitResult.data || []).forEach((r: { check_in_at: string }) => {
         const date = r.check_in_at?.slice(0, 10);
         if (!date) return;
         attendanceMap[date] = (attendanceMap[date] || 0) + 1;
       });
 
-      const attendanceChart = Object.entries(attendanceMap).map(([date, count]) => ({
-        date: date.slice(5),
-        count,
-      }));
+      const attendanceChart = Array.from({ length: 14 }, (_, index) => {
+        const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 13 + index))
+          .toISOString()
+          .slice(0, 10);
+        return { date: date.slice(5), count: attendanceMap[date] || 0 };
+      });
 
       // Revenue chart: last 6 months
       const revenueChart: { month: string; revenue: number }[] = [];
       for (let i = 5; i >= 0; i--) {
-        const d = new Date();
-        d.setMonth(d.getMonth() - i);
-        const year = d.getFullYear();
-        const month = d.getMonth();
-        const monthStart = new Date(year, month, 1).toISOString().split('T')[0];
-        const monthEnd = new Date(year, month + 1, 0).toISOString().split('T')[0];
+        const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+        const nextMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
 
-        const { data: monthPayments } = await supabase
+        const monthPaymentsResult = await supabase
           .from('payments')
-          .select('amount')
+          .select('amount, refund_amount')
           .eq('gym_id', gymId)
-          .gte('payment_date', monthStart)
-          .lte('payment_date', monthEnd);
+          .in('status', ['completed', 'partially_refunded'])
+          .gte('payment_date', d.toISOString())
+          .lt('payment_date', nextMonth.toISOString());
+        throwIfQueryError(monthPaymentsResult.error);
 
-        const monthRevenue = (monthPayments || []).reduce((sum, p) => sum + Number(p.amount), 0);
+        const monthRevenue = (monthPaymentsResult.data || []).reduce(
+          (sum, payment) => sum + Number(payment.amount) - Number(payment.refund_amount || 0),
+          0
+        );
         revenueChart.push({
-          month: d.toLocaleDateString('en-US', { month: 'short' }),
+          month: d.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' }),
           revenue: monthRevenue,
         });
       }
 
       // Recent members
-      const { data: recentMembers } = await supabase
+      const recentMembersResult = await supabase
         .from('members')
         .select('id, member_id, name, status, expiry_date')
         .eq('gym_id', gymId)
         .order('created_at', { ascending: false })
         .limit(5);
+      throwIfQueryError(recentMembersResult.error);
 
       return NextResponse.json({
         stats: {
-          totalMembers: totalMembers || 0,
-          activeMembers: activeMembers || 0,
-          expiringMembers: expiringMembers || 0,
-          expiredMembers: expiredMembers || 0,
+          totalMembers: totalMembersResult.count || 0,
+          activeMembers: activeMembersResult.count || 0,
+          expiringMembers: expiringMembersResult.count || 0,
+          expiredMembers: expiredMembersResult.count || 0,
           totalRevenue,
           todayAttendance: todayAttendance || 0,
           insideNow: inside.length,
@@ -171,7 +192,7 @@ export async function GET() {
         floor: { inside, left },
         attendanceChart,
         revenueChart,
-        recentMembers: recentMembers || [],
+        recentMembers: recentMembersResult.data || [],
       });
     }
 
