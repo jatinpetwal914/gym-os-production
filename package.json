@@ -11,6 +11,8 @@
     "start": "node server.js",
     "lint": "node ./node_modules/next/dist/bin/next lint",
     "typecheck": "tsc --noEmit",
+    "test:unit": "tsx --test tests/attendance-query.test.ts",
+    "test:e2e:lifecycle": "node tests/lifecycle-e2e.js",
     "db:reset-demo": "node scripts/db-reset-demo.js",
     "seed:demo": "node scripts/seed-demo.js"
   },

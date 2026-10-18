@@ -371,6 +371,7 @@ function ScanTab() {
 
 function HistoryTab() {
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [from, setFrom] = useState('');
@@ -378,30 +379,36 @@ function HistoryTab() {
   const [page, setPage] = useState(1);
   const limit = 20;
 
-  const fetchHistory = useCallback(async () => {
+  const fetchHistory = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     setError('');
     try {
       const params = new URLSearchParams();
+      params.set('page', String(page));
+      params.set('limit', String(limit));
       if (from) params.set('from', from);
       if (to) params.set('to', to);
-      const res = await fetch(`/api/attendance?${params}`);
+      const res = await fetch(`/api/attendance?${params}`, { signal });
       if (!res.ok) throw new Error('Failed to fetch attendance');
-      const json = await res.json();
-      setRecords(json.data || []);
+      const json: { data?: AttendanceRecord[]; total?: number } = await res.json();
+      setRecords(Array.isArray(json.data) ? json.data : []);
+      setTotal(typeof json.total === 'number' ? json.total : 0);
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return;
       setError(err instanceof Error ? err.message : 'Failed to load attendance');
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
-  }, [from, to]);
+  }, [from, to, page]);
 
   useEffect(() => {
-    fetchHistory();
+    const controller = new AbortController();
+    void fetchHistory(controller.signal);
+    return () => controller.abort();
   }, [fetchHistory]);
 
-  const totalPages = Math.max(1, Math.ceil(records.length / limit));
-  const paginated = records.slice((page - 1) * limit, page * limit);
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const paginated = records;
 
   return (
     <div>
@@ -428,7 +435,6 @@ function HistoryTab() {
         <button
           onClick={() => {
             setPage(1);
-            fetchHistory();
           }}
           className="admin-secondary-btn"
         >
@@ -494,10 +500,10 @@ function HistoryTab() {
         </QueryState>
 
         {/* Pagination */}
-        {!loading && records.length > limit && (
+        {!loading && total > limit && (
           <div className="flex items-center justify-between border-t border-[#DAE1E7] px-4 py-3">
             <p className="text-xs text-slate-400">
-              Page {page} of {totalPages} · {records.length} total
+              Page {page} of {totalPages} · {total} total
             </p>
             <div className="flex items-center gap-2">
               <button

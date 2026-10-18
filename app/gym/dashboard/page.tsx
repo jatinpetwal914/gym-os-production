@@ -49,6 +49,8 @@ interface FloorMember extends GymMemberCardData {
   check_out_time: string | null;
 }
 
+const DASHBOARD_REQUEST_TIMEOUT_MS = 15000;
+
 export default function GymDashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [attendanceData, setAttendanceData] = useState<{ date: string; count: number }[]>([]);
@@ -87,18 +89,29 @@ export default function GymDashboard() {
 
   useEffect(() => {
     let timer: number | undefined;
+    let requestTimeout: number | undefined;
     let activeRequest: AbortController | null = null;
     let disposed = false;
 
     const poll = () => {
       if (disposed || document.visibilityState !== 'visible') return;
 
+      setLoading(true);
+      setError('');
       const controller = new AbortController();
       activeRequest = controller;
+      requestTimeout = window.setTimeout(() => {
+        if (controller.signal.aborted) return;
+        setError('Dashboard data is taking too long to load. Retrying shortly.');
+        setLoading(false);
+        controller.abort();
+      }, DASHBOARD_REQUEST_TIMEOUT_MS);
       void fetchDashboard(controller.signal).finally(() => {
+        if (requestTimeout !== undefined) window.clearTimeout(requestTimeout);
+        requestTimeout = undefined;
         if (activeRequest === controller) activeRequest = null;
-        if (!disposed && !controller.signal.aborted && document.visibilityState === 'visible') {
-          timer = window.setTimeout(poll, 20000);
+        if (!disposed && document.visibilityState === 'visible') {
+          timer = window.setTimeout(poll, controller.signal.aborted ? 5000 : 20000);
         }
       });
     };
@@ -107,6 +120,8 @@ export default function GymDashboard() {
       if (document.visibilityState === 'hidden') {
         if (timer !== undefined) window.clearTimeout(timer);
         timer = undefined;
+        if (requestTimeout !== undefined) window.clearTimeout(requestTimeout);
+        requestTimeout = undefined;
         activeRequest?.abort();
         activeRequest = null;
       } else if (!activeRequest && timer === undefined) {
@@ -121,6 +136,7 @@ export default function GymDashboard() {
       disposed = true;
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (timer !== undefined) window.clearTimeout(timer);
+      if (requestTimeout !== undefined) window.clearTimeout(requestTimeout);
       activeRequest?.abort();
     };
   }, [fetchDashboard]);

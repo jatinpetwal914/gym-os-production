@@ -80,6 +80,7 @@ export default function MembersPage() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -108,7 +109,7 @@ export default function MembersPage() {
         page: String(page),
         limit: String(limit),
       });
-      if (search) params.set('search', search);
+      if (debouncedSearch) params.set('search', debouncedSearch);
       if (statusFilter) params.set('status', statusFilter);
 
       const res = await fetch(`/api/members?${params}`);
@@ -121,7 +122,7 @@ export default function MembersPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, search, statusFilter]);
+  }, [page, debouncedSearch, statusFilter]);
 
   const fetchPlans = useCallback(async () => {
     try {
@@ -142,22 +143,13 @@ export default function MembersPage() {
     fetchPlans();
   }, [fetchPlans]);
 
-  // Debounced search
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (page !== 1) {
-        setPage(1);
-      } else {
-        fetchMembers();
-      }
+      setPage(1);
+      setDebouncedSearch(search);
     }, 350);
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
-
-  useEffect(() => {
-    fetchMembers();
-  }, [statusFilter, page]);
 
   const openAddModal = () => {
     setEditingMember(null);

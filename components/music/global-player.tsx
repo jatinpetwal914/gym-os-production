@@ -47,29 +47,50 @@ export function GlobalPlayer() {
   const [loading, setLoading] = useState(true);
   const [contextId, setContextId] = useState('mixed');
   const contextIdRef = useRef(contextId);
+  const catalogRequestRef = useRef<AbortController | null>(null);
   contextIdRef.current = contextId;
 
-  const loadCatalog = useCallback((nextContext: string, signal?: AbortSignal) => {
-    return fetch(`/api/music/tracks?context=${encodeURIComponent(nextContext)}`, { signal })
-      .then(async (res) => {
-        if (!res.ok) return [];
-        const json: { data?: MusicTrack[] } = await res.json().catch(() => ({ data: [] }));
-        return json.data || [];
-      })
-      .then((fresh) => {
-        setTracks(fresh);
-        if (fresh.length) {
-          try {
-            localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), tracks: fresh, context: nextContext }));
-          } catch {
-            /* ignore storage errors */
-          }
+  const loadCatalog = useCallback(async (nextContext: string) => {
+    catalogRequestRef.current?.abort();
+    const controller = new AbortController();
+    catalogRequestRef.current = controller;
+
+    try {
+      const response = await fetch(
+        `/api/music/tracks?context=${encodeURIComponent(nextContext)}`,
+        { signal: controller.signal }
+      );
+      if (!response.ok) {
+        throw new Error(`Music catalog request failed with status ${response.status}`);
+      }
+
+      const json: { data?: MusicTrack[] } = await response.json();
+      if (!Array.isArray(json.data)) {
+        throw new Error('Music catalog response has an invalid data shape');
+      }
+      if (controller.signal.aborted) return;
+
+      setTracks(json.data);
+      if (json.data.length) {
+        try {
+          localStorage.setItem(
+            CACHE_KEY,
+            JSON.stringify({ ts: Date.now(), tracks: json.data, context: nextContext })
+          );
+        } catch {
+          /* Storage may be unavailable or full. */
         }
-      })
-      .catch(() => {
-        // Keep whatever we had (cache or empty).
-      })
-      .finally(() => setLoading(false));
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        console.error('[music] Unable to refresh catalog; keeping the current catalog.', error);
+      }
+    } finally {
+      if (catalogRequestRef.current === controller) {
+        catalogRequestRef.current = null;
+        setLoading(false);
+      }
+    }
   }, []);
 
   useEffect(() => {
@@ -79,14 +100,24 @@ export function GlobalPlayer() {
       return;
     }
 
+    let initialContext = 'mixed';
     let cached: MusicTrack[] | null = null;
     try {
       const savedContext = localStorage.getItem(CONTEXT_KEY);
-      if (savedContext) setContextId(savedContext);
+      if (savedContext && MUSIC_PLAYLIST_CONTEXTS.some((context) => context.active && context.id === savedContext)) {
+        initialContext = savedContext;
+      }
+      setContextId(initialContext);
       const raw = localStorage.getItem(CACHE_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && parsed.ts && Date.now() - parsed.ts < CACHE_TTL_MS) {
+        const parsed: { ts?: number; context?: string; tracks?: unknown } = JSON.parse(raw);
+        const cacheAge = typeof parsed.ts === 'number' ? Date.now() - parsed.ts : -1;
+        if (
+          parsed.context === initialContext &&
+          cacheAge >= 0 &&
+          cacheAge < CACHE_TTL_MS &&
+          Array.isArray(parsed.tracks)
+        ) {
           cached = (parsed.tracks || []) as MusicTrack[];
         }
       }
@@ -95,20 +126,14 @@ export function GlobalPlayer() {
     }
     if (cached && cached.length) setTracks(cached);
 
-    const controller = new AbortController();
-    const initialContext = (() => {
-      try {
-        return localStorage.getItem(CONTEXT_KEY) || 'mixed';
-      } catch {
-        return 'mixed';
-      }
-    })();
-    loadCatalog(initialContext, controller.signal);
+    void loadCatalog(initialContext);
     const refresh = window.setInterval(() => {
       void loadCatalog(contextIdRef.current);
     }, 15 * 60 * 1000);
     return () => {
-      controller.abort();
+      const pendingRequest = catalogRequestRef.current;
+      catalogRequestRef.current = null;
+      pendingRequest?.abort();
       window.clearInterval(refresh);
     };
   }, [loadCatalog, isPublicSurface]);

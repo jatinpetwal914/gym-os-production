@@ -1,16 +1,14 @@
 ﻿/**
  * Test script: Login + Role-Based Access Control verification
  *
- * Run with: node test-login-rbac.js
+ * Run with: TEST_ADMIN_USERNAME=... TEST_ADMIN_PASSWORD=... node test-login-rbac.js
  * Requires the Next.js dev server running on http://localhost:3000
- * and the local Supabase stack running (supabase start)
- *
- * NOTE: The platform now starts with ZERO demo data. Only the Super Admin
- * account is seeded. Gym admins are created through the Super Admin panel
- * (Gyms -> Add Gym), so the gym-admin login RBAC tests have been removed.
+ * and a dedicated test account in a non-production Supabase project.
  */
 
-const API = "http://localhost:3000";
+const API = process.env.TEST_BASE_URL || "http://127.0.0.1:3000";
+const username = process.env.TEST_ADMIN_USERNAME;
+const password = process.env.TEST_ADMIN_PASSWORD;
 
 async function login(username, password) {
   const res = await fetch(API + "/api/auth/login", {
@@ -38,6 +36,10 @@ async function accessProtected(cookie, path) {
 }
 
 async function run() {
+  if (!username || !password) {
+    throw new Error("Set TEST_ADMIN_USERNAME and TEST_ADMIN_PASSWORD for a dedicated test account.");
+  }
+
   let passed = 0;
   let failed = 0;
 
@@ -53,18 +55,18 @@ async function run() {
 
   // ── Test 1: Superadmin login ─────────────────────────────────────────────
   console.log("\n── Test 1: Superadmin login ──");
-  const sa = await login("superadmin", "Super@2026#Admin");
+  const sa = await login(username, password);
   console.log("  Status:", sa.status);
   console.log("  Cookie set:", !!sa.cookie);
   console.log("  Body:", sa.body);
   check("Login returns 200", sa.status === 200);
   check("Cookie is set", !!sa.cookie);
   check("Redirects to /super-admin/dashboard", sa.body.includes("/super-admin/dashboard"));
-  check("Role is SUPER_ADMIN", sa.body.includes("SUPER_ADMIN"));
+  check("Role is super_admin", sa.body.includes('"role":"super_admin"'));
 
   // ── Test 2: Wrong credentials ────────────────────────────────────────────
   console.log("\n── Test 2: Wrong credentials ──");
-  const bad = await login("superadmin", "wrong-password");
+  const bad = await login(username, `${password}-invalid`);
   console.log("  Status:", bad.status, "(expected 401)");
   console.log("  Body:", bad.body);
   check("Returns 401", bad.status === 401);

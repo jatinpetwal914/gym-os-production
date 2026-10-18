@@ -27,8 +27,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ data: tracks });
   } catch (error) {
     console.error('[api/music/tracks] error:', error);
-    // Never break the app — return an empty catalog so the player degrades to
-    // "Music unavailable" rather than crashing the dashboard/login.
-    return NextResponse.json({ data: [] }, { status: 200 });
+    return NextResponse.json({ error: 'Music catalog unavailable' }, { status: 503 });
   }
 }

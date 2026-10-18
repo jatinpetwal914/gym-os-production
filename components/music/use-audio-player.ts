@@ -57,7 +57,7 @@ export function useAudioPlayer(tracks: MusicTrack[]): AudioPlayerControls {
 
   useEffect(() => {
     const audio = new Audio();
-    audio.preload = 'auto';
+    audio.preload = 'none';
     audio.setAttribute('playsinline', 'true');
     audioRef.current = audio;
 
@@ -148,23 +148,28 @@ export function useAudioPlayer(tracks: MusicTrack[]): AudioPlayerControls {
       return;
     }
 
-    audio.src = current.streamUrl;
-    audio.load();
     setCurrentTime(0);
     setDuration(0);
     setError(null);
 
-    if (wantPlayingRef.current) {
-      void audio
-        .play()
-        .then(() => {
-          setIsPlaying(true);
-          failureCountRef.current = 0;
-        })
-        .catch(() => {
-          setIsPlaying(false);
-        });
+    if (!wantPlayingRef.current) {
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
+      return;
     }
+
+    audio.src = current.streamUrl;
+    audio.load();
+    void audio
+      .play()
+      .then(() => {
+        setIsPlaying(true);
+        failureCountRef.current = 0;
+      })
+      .catch(() => {
+        setIsPlaying(false);
+      });
   }, [tick, current]);
 
   const play = useCallback(async () => {

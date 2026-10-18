@@ -50,58 +50,94 @@ export async function GET() {
 
       const gymId = session.gymId;
 
-      const totalMembersResult = await supabase
-        .from('members')
-        .select('*', { count: 'exact', head: true })
-        .eq('gym_id', gymId);
-      throwIfQueryError(totalMembersResult.error);
+      const fourteenDaysAgo = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 13));
+      const fourteenDaysStr = fourteenDaysAgo.toISOString().slice(0, 10);
+      const monthWindows = Array.from({ length: 6 }, (_, index) => {
+        const month = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (5 - index), 1));
+        return {
+          month,
+          nextMonth: new Date(Date.UTC(month.getUTCFullYear(), month.getUTCMonth() + 1, 1)),
+        };
+      });
 
-      const activeMembersResult = await supabase
-        .from('members')
-        .select('*', { count: 'exact', head: true })
-        .eq('gym_id', gymId)
-        .eq('status', 'active');
-      throwIfQueryError(activeMembersResult.error);
+      const [
+        totalMembersResult,
+        activeMembersResult,
+        expiringMembersResult,
+        expiredMembersResult,
+        revenueResult,
+        todayVisitsResult,
+        visitResult,
+        monthPaymentResults,
+        recentMembersResult,
+      ] = await Promise.all([
+        supabase.from('members').select('*', { count: 'exact', head: true }).eq('gym_id', gymId),
+        supabase.from('members').select('*', { count: 'exact', head: true }).eq('gym_id', gymId).eq('status', 'active'),
+        supabase
+          .from('members')
+          .select('*', { count: 'exact', head: true })
+          .eq('gym_id', gymId)
+          .eq('status', 'expiring')
+          .gte('expiry_date', today)
+          .lte('expiry_date', sevenDaysStr),
+        supabase.from('members').select('*', { count: 'exact', head: true }).eq('gym_id', gymId).eq('status', 'expired'),
+        supabase
+          .from('payments')
+          .select('amount, refund_amount')
+          .eq('gym_id', gymId)
+          .in('status', ['completed', 'partially_refunded']),
+        supabase
+          .from('visits')
+          .select(`
+            id, check_in_at, check_out_at, status,
+            members!inner(id, member_id, name, phone, gender, status, plan_id, amount_paid, expiry_date)
+          `)
+          .eq('gym_id', gymId)
+          .gte('check_in_at', `${today}T00:00:00.000Z`)
+          .lt('check_in_at', tomorrow.toISOString())
+          .order('check_in_at', { ascending: false }),
+        supabase
+          .from('visits')
+          .select('check_in_at')
+          .eq('gym_id', gymId)
+          .gte('check_in_at', `${fourteenDaysStr}T00:00:00.000Z`)
+          .lt('check_in_at', tomorrow.toISOString())
+          .order('check_in_at', { ascending: true }),
+        Promise.all(
+          monthWindows.map(({ month, nextMonth }) =>
+            supabase
+              .from('payments')
+              .select('amount, refund_amount')
+              .eq('gym_id', gymId)
+              .in('status', ['completed', 'partially_refunded'])
+              .gte('payment_date', month.toISOString())
+              .lt('payment_date', nextMonth.toISOString())
+          )
+        ),
+        supabase
+          .from('members')
+          .select('id, member_id, name, status, expiry_date')
+          .eq('gym_id', gymId)
+          .order('created_at', { ascending: false })
+          .limit(5),
+      ]);
 
-      const expiringMembersResult = await supabase
-        .from('members')
-        .select('*', { count: 'exact', head: true })
-        .eq('gym_id', gymId)
-        .eq('status', 'expiring')
-        .gte('expiry_date', today)
-        .lte('expiry_date', sevenDaysStr);
-      throwIfQueryError(expiringMembersResult.error);
-
-      const expiredMembersResult = await supabase
-        .from('members')
-        .select('*', { count: 'exact', head: true })
-        .eq('gym_id', gymId)
-        .eq('status', 'expired');
-      throwIfQueryError(expiredMembersResult.error);
-
-      const revenueResult = await supabase
-        .from('payments')
-        .select('amount, refund_amount')
-        .eq('gym_id', gymId)
-        .in('status', ['completed', 'partially_refunded']);
-      throwIfQueryError(revenueResult.error);
+      [
+        totalMembersResult,
+        activeMembersResult,
+        expiringMembersResult,
+        expiredMembersResult,
+        revenueResult,
+        todayVisitsResult,
+        visitResult,
+        ...monthPaymentResults,
+        recentMembersResult,
+      ].forEach((result) => throwIfQueryError(result.error));
 
       const totalRevenue = (revenueResult.data || []).reduce(
         (sum, payment) => sum + Number(payment.amount) - Number(payment.refund_amount || 0),
         0
       );
-
-      const todayVisitsResult = await supabase
-        .from('visits')
-        .select(`
-          id, check_in_at, check_out_at, status,
-          members!inner(id, member_id, name, phone, gender, status, plan_id, amount_paid, expiry_date)
-        `)
-        .eq('gym_id', gymId)
-        .gte('check_in_at', `${today}T00:00:00.000Z`)
-        .lt('check_in_at', tomorrow.toISOString())
-        .order('check_in_at', { ascending: false });
-      throwIfQueryError(todayVisitsResult.error);
 
       const todayVisits = (todayVisitsResult.data || []) as VisitRow[];
       const mapVisit = (row: VisitRow) => {
@@ -118,18 +154,6 @@ export async function GET() {
       const todayAttendance = todayVisits.length;
 
       // Attendance chart: last 14 days
-      const fourteenDaysAgo = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 13));
-      const fourteenDaysStr = fourteenDaysAgo.toISOString().slice(0, 10);
-
-      const visitResult = await supabase
-        .from('visits')
-        .select('check_in_at')
-        .eq('gym_id', gymId)
-        .gte('check_in_at', `${fourteenDaysStr}T00:00:00.000Z`)
-        .lt('check_in_at', tomorrow.toISOString())
-        .order('check_in_at', { ascending: true });
-      throwIfQueryError(visitResult.error);
-
       const attendanceMap: Record<string, number> = {};
       (visitResult.data || []).forEach((r: { check_in_at: string }) => {
         const date = r.check_in_at?.slice(0, 10);
@@ -145,38 +169,17 @@ export async function GET() {
       });
 
       // Revenue chart: last 6 months
-      const revenueChart: { month: string; revenue: number }[] = [];
-      for (let i = 5; i >= 0; i--) {
-        const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
-        const nextMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
-
-        const monthPaymentsResult = await supabase
-          .from('payments')
-          .select('amount, refund_amount')
-          .eq('gym_id', gymId)
-          .in('status', ['completed', 'partially_refunded'])
-          .gte('payment_date', d.toISOString())
-          .lt('payment_date', nextMonth.toISOString());
-        throwIfQueryError(monthPaymentsResult.error);
-
+      const revenueChart = monthWindows.map(({ month }, index) => {
+        const monthPaymentsResult = monthPaymentResults[index];
         const monthRevenue = (monthPaymentsResult.data || []).reduce(
           (sum, payment) => sum + Number(payment.amount) - Number(payment.refund_amount || 0),
           0
         );
-        revenueChart.push({
-          month: d.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' }),
+        return {
+          month: month.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' }),
           revenue: monthRevenue,
-        });
-      }
-
-      // Recent members
-      const recentMembersResult = await supabase
-        .from('members')
-        .select('id, member_id, name, status, expiry_date')
-        .eq('gym_id', gymId)
-        .order('created_at', { ascending: false })
-        .limit(5);
-      throwIfQueryError(recentMembersResult.error);
+        };
+      });
 
       return NextResponse.json({
         stats: {

@@ -1,5 +1,5 @@
 /**
- * Builds a large gym / workout playlist (target 1000 unique tracks).
+ * Builds a deduplicated gym / workout playlist with a bounded 150-track target.
  * Pixabay is used when PIXABAY_API_KEY is set. Audius fills the rest so the
  * player is never stuck on the 9-track seed list.
  */
@@ -10,7 +10,7 @@ import { AudiusMusicProvider } from './audius-provider';
 import { PixabayMusicProvider, rewritePixabayStreamUrl } from './pixabay-provider';
 import { AUDIUS_API_BASE } from './config';
 
-export const WORKOUT_CATALOG_TARGET = 1000;
+export const WORKOUT_CATALOG_TARGET = 150;
 
 const WORKOUT_QUERIES = [
   'workout',
@@ -85,9 +85,20 @@ export async function getWorkoutCatalog(): Promise<MusicTrack[]> {
 function unique(tracks: MusicTrack[]): MusicTrack[] {
   const seen = new Set<string>();
   return tracks.filter((track) => {
-    const key = `${track.provider}:${track.providerTrackId}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
+    const providerKey = `${track.provider}:${track.providerTrackId.trim().toLowerCase()}`;
+    const normalizedTitle = track.title.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const normalizedArtist = track.artist.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const recordingKey =
+      normalizedTitle &&
+      normalizedArtist &&
+      normalizedArtist !== 'unknown artist' &&
+      typeof track.duration === 'number'
+        ? `recording:${normalizedTitle}:${normalizedArtist}:${Math.round(track.duration / 3)}`
+        : null;
+
+    if (seen.has(providerKey) || (recordingKey && seen.has(recordingKey))) return false;
+    seen.add(providerKey);
+    if (recordingKey) seen.add(recordingKey);
     return true;
   });
 }

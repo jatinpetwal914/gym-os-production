@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/session';
 import { createUserServerClient } from '@/lib/supabase/server';
 import { canAccessGymPortal, canAccessStaffApi, canCheckIn, isSuperAdminRole } from '@/lib/roles';
+import { isValidDateOnly, parseAttendancePagination } from '@/lib/attendance-query';
 
 export async function GET(request: NextRequest) {
   try {
@@ -15,13 +16,24 @@ export async function GET(request: NextRequest) {
     const from = searchParams.get('from');
     const to = searchParams.get('to');
     const gymIdFilter = searchParams.get('gymId');
+    const pagination = parseAttendancePagination(searchParams);
+
+    if (!pagination) {
+      return NextResponse.json({ error: 'Invalid page or limit' }, { status: 400 });
+    }
+    if ((from && !isValidDateOnly(from)) || (to && !isValidDateOnly(to))) {
+      return NextResponse.json({ error: 'Dates must use YYYY-MM-DD format' }, { status: 400 });
+    }
+    if (from && to && from > to) {
+      return NextResponse.json({ error: 'The from date must not be after the to date' }, { status: 400 });
+    }
 
     let query = supabase
       .from('visits')
       .select(`
         id, gym_id, branch_id, member_id, check_in_at, check_out_at, status, created_at, method,
         members!inner(member_id, name, phone)
-      `)
+      `, { count: 'exact' })
       .order('check_in_at', { ascending: false });
 
     if (canAccessGymPortal(session.role)) {
@@ -36,8 +48,10 @@ export async function GET(request: NextRequest) {
     if (memberId) query = query.eq('member_id', memberId);
     if (from) query = query.gte('check_in_at', `${from}T00:00:00.000Z`);
     if (to) query = query.lte('check_in_at', `${to}T23:59:59.999Z`);
+    const offset = (pagination.page - 1) * pagination.limit;
+    query = query.range(offset, offset + pagination.limit - 1);
 
-    const { data, error } = await query;
+    const { data, count, error } = await query;
     if (error) throw error;
 
     const mapped = (data || []).map((row) => ({
@@ -47,7 +61,12 @@ export async function GET(request: NextRequest) {
       check_out_time: row.check_out_at,
     }));
 
-    return NextResponse.json({ data: mapped });
+    return NextResponse.json({
+      data: mapped,
+      total: count || 0,
+      page: pagination.page,
+      limit: pagination.limit,
+    });
   } catch (error) {
     console.error('Attendance GET error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -61,12 +80,25 @@ export async function POST(request: NextRequest) {
     if (!canCheckIn(session.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
     const supabase = createUserServerClient();
-    const body = await request.json();
-    if (!body.qr_token) {
-      return NextResponse.json({ error: 'qr_token is required' }, { status: 400 });
+    const body: unknown = await request.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: 'A valid JSON object is required' }, { status: 400 });
+    }
+    const input = body as Record<string, unknown>;
+    const qrToken = typeof input.qr_token === 'string' ? input.qr_token.trim() : '';
+    if (!qrToken || qrToken.length > 256) {
+      return NextResponse.json(
+        { error: 'qr_token must be a non-empty string with at most 256 characters' },
+        { status: 400 }
+      );
     }
 
-    let branchId = body.branch_id || session.homeBranchId;
+    let branchId: string | null = typeof input.branch_id === 'string'
+      ? input.branch_id
+      : session.homeBranchId || null;
+    if (input.branch_id !== undefined && typeof input.branch_id !== 'string') {
+      return NextResponse.json({ error: 'branch_id must be a string' }, { status: 400 });
+    }
     if (!branchId && session.gymId) {
       const { data: branch } = await supabase
         .from('gym_branches')
@@ -74,7 +106,7 @@ export async function POST(request: NextRequest) {
         .eq('gym_id', session.gymId)
         .eq('is_default', true)
         .maybeSingle();
-      branchId = branch?.id;
+      branchId = branch?.id || null;
     }
 
     if (!branchId) {
@@ -82,7 +114,7 @@ export async function POST(request: NextRequest) {
     }
 
     const { data, error } = await supabase.rpc('check_in', {
-      p_qr_token: body.qr_token,
+      p_qr_token: qrToken,
       p_branch_id: branchId,
     });
 
