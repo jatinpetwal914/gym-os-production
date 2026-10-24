@@ -282,10 +282,10 @@ html[data-gymos-intro-pending] [data-gymos-site-content] {
 }
 
 .landing-os {
-  --landing-blue: #2064b6;
-  --landing-teal: #6dccc3;
-  --landing-grey: #dae1e7;
-  --landing-light: #f4f7fa;
+  --landing-blue: #4169d8;
+  --landing-teal: #4169d8;
+  --landing-grey: #e5e5e5;
+  --landing-light: #f4f4f3;
 }
 
 .landing-blob {
